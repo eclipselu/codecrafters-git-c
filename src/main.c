@@ -6,7 +6,7 @@
 #include <string.h>
 #include <sys/stat.h>
 
-#include <openssl/sha.h>
+#include <openssl/evp.h>
 #include <zlib.h>
 
 #include "arena.h"
@@ -205,11 +205,11 @@ internal int hash_object(Arena *a, const char *flag, const char *file_name) {
     return ret;
   }
 
-  SHA_CTX sha_ctx = {0};
-  SHA1_Init(&sha_ctx);
+  EVP_MD_CTX *mdctx = EVP_MD_CTX_new();
+  EVP_DigestInit(mdctx, EVP_sha1());
 
   // process header
-  SHA1_Update(&sha_ctx, header.str, header.size);
+  EVP_DigestUpdate(mdctx, header.str, header.size);
 
   stream.avail_in = header.size;
   stream.next_in = header.str;
@@ -227,7 +227,7 @@ internal int hash_object(Arena *a, const char *flag, const char *file_name) {
     stream.avail_in = bytes_read;
 
     // do sha1 too
-    SHA1_Update(&sha_ctx, inbuf, bytes_read);
+    EVP_DigestUpdate(mdctx, inbuf, bytes_read);
 
     if (ferror(file)) {
       deflateEnd(&stream);
@@ -259,24 +259,26 @@ internal int hash_object(Arena *a, const char *flag, const char *file_name) {
 
   } while (ret != Z_STREAM_END);
 
-  uint8_t sha1_digest[SHA_DIGEST_LENGTH];
-  SHA1_Final(sha1_digest, &sha_ctx);
+  uint8_t sha1_digest[EVP_MAX_MD_SIZE];
+  uint32_t hash_len;
+  EVP_DigestFinal(mdctx, sha1_digest, &hash_len);
 
-  char sha1_hex_sum[SHA_DIGEST_LENGTH * 2 + 1];
-  for (int i = 0; i < SHA_DIGEST_LENGTH; i++) {
+  char sha1_hex_sum[EVP_MAX_MD_SIZE * 2 + 1];
+  for (int i = 0; i < hash_len; i++) {
     snprintf(sha1_hex_sum + 2 * i, sizeof(sha1_hex_sum), "%02x",
              sha1_digest[i]);
   }
 
   // create the object
+  char object_dir[128];
+  snprintf(object_dir, sizeof(object_dir), ".git/objects/%.2s", sha1_hex_sum);
+
   char object_path[128];
-  snprintf(object_path, sizeof(object_path), ".git/objects/%.2s/%.38s",
-           sha1_hex_sum, sha1_hex_sum + 2);
+  snprintf(object_path, sizeof(object_path), "%s/%.38s", object_dir,
+           sha1_hex_sum + 2);
 
   printf("%s\n", sha1_hex_sum);
 
-  char object_dir[128];
-  snprintf(object_dir, sizeof(object_dir), ".git/objects/%.2s", sha1_hex_sum);
   if (mkdir(object_dir, 0755) == -1 && errno != EEXIST) {
     perror("Failed to create object directory");
     return -1;
