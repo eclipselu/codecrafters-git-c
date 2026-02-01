@@ -299,6 +299,133 @@ internal int hash_object(Arena *a, const char *flag, const char *file_name) {
   return 0;
 }
 
+typedef struct Tree_Entry Tree_Entry;
+struct Tree_Entry {
+  String mode;
+  String type;
+  String name;
+  String sha;
+};
+
+typedef struct Tree_Entry_Array Tree_Entry_Array;
+struct Tree_Entry_Array {
+  Tree_Entry *items;
+  uint64_t count;
+  uint64_t capacity;
+};
+
+internal void tree_entry_array_push(Arena *a, Tree_Entry_Array *arr,
+                                    Tree_Entry entry) {
+  if (arr->count >= arr->capacity) {
+    uint64_t new_cap = arr->capacity == 0 ? 8 : arr->capacity * 2;
+    Tree_Entry *new_items =
+        (Tree_Entry *)arena_alloc(a, sizeof(Tree_Entry) * new_cap);
+    if (arr->items != NULL) {
+      memcpy(new_items, arr->items, sizeof(Tree_Entry) * arr->count);
+    }
+    arr->items = new_items;
+    arr->capacity = new_cap;
+  }
+  arr->items[arr->count++] = entry;
+}
+
+internal int ls_tree(Arena *a, int argc, char *argv[]) {
+  char *tree_sha = argv[argc - 1];
+  bool name_only = strcmp(argv[2], "--name-only") == 0;
+
+  String hash = str_init(tree_sha, strlen(tree_sha));
+  StringArray paths = {0};
+  str_array_push(a, &paths, str_clone_from_cstring(a, ".git/objects"));
+  str_array_push(a, &paths, str_substr(hash, 0, 2));
+  str_array_push(a, &paths, str_substr(hash, 2, hash.size));
+
+  String object_path =
+      str_array_join(a, &paths, str_clone_from_cstring(a, "/"));
+
+  Tree_Entry_Array entries = {0};
+
+  // decompress
+  uint8_t *content = NULL;
+  uint64_t bytes_decompressed =
+      decompress_object(a, "tree", object_path, &content);
+
+  int index = 0;
+  while (index < bytes_decompressed) {
+    // mode
+    int mode_end = index;
+    while (mode_end < bytes_decompressed && content[mode_end] != ' ') {
+      ++mode_end;
+    }
+
+    String mode_str = {
+        .str = content + index,
+        .size = mode_end - index,
+    };
+    if (mode_str.size <= 0) {
+      break;
+    }
+
+    // name
+    int name_start = mode_end + 1;
+    int name_end = mode_end + 1;
+    while (name_end < bytes_decompressed && content[name_end] != '\0') {
+      ++name_end;
+    }
+
+    String name_str = {
+        .str = content + name_start,
+        .size = name_end - name_start,
+    };
+    if (name_str.size <= 0) {
+      break;
+    }
+
+    // sha
+    int sha_start = name_end + 1;
+    int sha_end = sha_start + 20;
+    if (sha_end > bytes_decompressed) {
+      break;
+    }
+
+    String sha_str = {
+        .str = content + sha_start,
+        .size = 20,
+    };
+
+    String type_str =
+        str_init(str_equal_cstr(mode_str, "040000") ? "tree" : "blob", 4);
+
+    char *sha_buf = arena_alloc(a, 40);
+    for (int i = 0; i < 20; i++) {
+      snprintf(sha_buf + 2 * i, sizeof(sha_buf), "%02x", sha_str.str[i]);
+    }
+    String sha = {
+        .str = (uint8_t *)sha_buf,
+        .size = 40,
+    };
+
+    Tree_Entry entry = {
+        .mode = mode_str, .type = type_str, .name = name_str, .sha = sha};
+    tree_entry_array_push(a, &entries, entry);
+
+    index = sha_end;
+  }
+
+  for (int i = 0; i < entries.count; ++i) {
+    Tree_Entry entry = entries.items[i];
+
+    if (name_only) {
+      printf("%.*s\n", entry.name.size, entry.name.str);
+    } else {
+      printf("%.*s %.*s %.*s\t%.*s\n", entry.mode.size, entry.mode.str,
+             entry.type.size, entry.type.str, entry.sha.size, entry.sha.str,
+             entry.name.size, entry.name.str);
+    }
+  }
+
+  return 0;
+}
+
 int main(int argc, char *argv[]) {
   // Disable output buffering
   setbuf(stdout, NULL);
@@ -321,6 +448,8 @@ int main(int argc, char *argv[]) {
     return cat_file(&arena, argv[2], argv[3]);
   } else if (strcmp(command, "hash-object") == 0) {
     return hash_object(&arena, argv[2], argv[3]);
+  } else if (strcmp(command, "ls-tree") == 0) {
+    return ls_tree(&arena, argc, argv);
   } else {
     fprintf(stderr, "Unknown command %s\n", command);
     return 1;
