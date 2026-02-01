@@ -40,9 +40,10 @@ internal int init() {
 }
 
 // use zlib to decompress object and print
-internal int decompress_object(Arena *a, String object_path) {
-  TempArenaMemory temp = temp_arena_memory_begin(a);
-
+// decompressed data will be written into dest
+// returns: number of bytes decompressed into dest
+internal int decompress_object(Arena *a, const char *object_type,
+                               String object_path, uint8_t **dest) {
   const char *path = to_cstring(a, object_path);
   FILE *file = fopen(path, "rb");
   if (file == NULL) {
@@ -61,8 +62,8 @@ internal int decompress_object(Arena *a, String object_path) {
   uint8_t *inbuf = arena_alloc(a, CHUNK);
   uint8_t *outbuf = arena_alloc(a, CHUNK);
 
-  uint8_t *databuf = NULL;
-  uint64_t databuf_size = 0;
+  uint64_t bytes_decompressed = 0;
+  uint64_t object_size = 0;
 
   do {
     stream.avail_in = fread(inbuf, sizeof(uint8_t), CHUNK, file);
@@ -90,7 +91,7 @@ internal int decompress_object(Arena *a, String object_path) {
       int have = CHUNK - stream.avail_out;
 
       uint8_t *ptr = outbuf;
-      if (databuf == NULL) {
+      if (*dest == NULL) {
         while (*ptr != '\0')
           ++ptr;
         ++ptr;
@@ -101,26 +102,25 @@ internal int decompress_object(Arena *a, String object_path) {
         };
         have -= header.size;
 
-        // blob <size>\0<content>
-        String blob_size = str_substr(header, 5, header.size);
-        int size = atoi(to_cstring(a, blob_size));
-        databuf = arena_alloc(a, size);
+        // <object_type> <size>\0<content>
+        String blob_size =
+            str_substr(header, strlen(object_type) + 1, header.size);
+        object_size = atoi(to_cstring(a, blob_size));
+        *dest = arena_alloc(a, object_size);
       }
-      memcpy(databuf + databuf_size, ptr, have);
-      databuf_size += have;
+      memcpy((*dest) + bytes_decompressed, ptr, have);
+      bytes_decompressed += have;
 
     } while (stream.avail_out == 0);
 
   } while (ret != Z_STREAM_END);
 
-  fwrite(databuf, sizeof(uint8_t), databuf_size, stdout);
+  assert(bytes_decompressed == object_size);
 
   inflateEnd(&stream);
   fclose(file);
 
-  temp_arena_memory_end(temp);
-
-  return 0;
+  return bytes_decompressed;
 }
 
 internal int cat_file(Arena *a, const char *object_type,
@@ -136,7 +136,11 @@ internal int cat_file(Arena *a, const char *object_type,
   String object_path =
       str_array_join(a, &paths, str_clone_from_cstring(a, "/"));
 
-  decompress_object(a, object_path);
+  uint8_t *content = NULL;
+  uint64_t bytes_decompressed =
+      decompress_object(a, "blob", object_path, &content);
+
+  fwrite(content, sizeof(uint8_t), bytes_decompressed, stdout);
 
   return 0;
 }
@@ -163,8 +167,6 @@ internal int hash_object(Arena *a, const char *flag, const char *file_name) {
   // TOOD: this is not always true, user can only hash and do not write to git
   // objects
   assert(strcmp(flag, "-w") == 0);
-
-  TempArenaMemory temp = temp_arena_memory_begin(a);
 
   // TODO: limitation 8192 characters for stdin, may need to store to tmp_file
   // to improve this.
@@ -293,8 +295,6 @@ internal int hash_object(Arena *a, const char *flag, const char *file_name) {
     fclose(file);
   }
   close(tmp_fd);
-
-  temp_arena_memory_end(temp);
 
   return 0;
 }
