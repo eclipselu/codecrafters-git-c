@@ -191,8 +191,7 @@ internal int hash_object(Arena *a, const char *flag, const char *file_name) {
 
   String header = {0};
   header.str = arena_alloc(a, 256);
-  header.size =
-      snprintf((char *)header.str, sizeof(header.str), "blob %ld", file_size);
+  header.size = snprintf((char *)header.str, 256, "blob %ld", file_size);
   header.size++; // include the '\0' at the end
 
   // do streaming SHA1 and zlib deflate
@@ -208,6 +207,13 @@ internal int hash_object(Arena *a, const char *flag, const char *file_name) {
   }
 
   EVP_MD_CTX *mdctx = EVP_MD_CTX_new();
+  if (mdctx == NULL) {
+    fprintf(stderr, "Failed to create message digest context\n");
+    deflateEnd(&stream);
+    close(tmp_fd);
+    fclose(file);
+    return -1;
+  }
   EVP_DigestInit(mdctx, EVP_sha1());
 
   // process header
@@ -290,7 +296,8 @@ internal int hash_object(Arena *a, const char *flag, const char *file_name) {
   }
 
   // clean up
-  inflateEnd(&stream);
+  EVP_MD_CTX_free(mdctx);
+  deflateEnd(&stream);
   if (file != NULL) {
     fclose(file);
   }
@@ -397,7 +404,7 @@ internal int ls_tree(Arena *a, int argc, char *argv[]) {
 
     char *sha_buf = arena_alloc(a, 40);
     for (int i = 0; i < 20; i++) {
-      snprintf(sha_buf + 2 * i, sizeof(sha_buf), "%02x", sha_str.str[i]);
+      snprintf(sha_buf + 2 * i, 3, "%02x", sha_str.str[i]);
     }
     String sha = {
         .str = (uint8_t *)sha_buf,
@@ -415,11 +422,11 @@ internal int ls_tree(Arena *a, int argc, char *argv[]) {
     Tree_Entry entry = entries.items[i];
 
     if (name_only) {
-      printf("%.*s\n", entry.name.size, entry.name.str);
+      printf("%.*s\n", (int)entry.name.size, entry.name.str);
     } else {
-      printf("%.*s %.*s %.*s\t%.*s\n", entry.mode.size, entry.mode.str,
-             entry.type.size, entry.type.str, entry.sha.size, entry.sha.str,
-             entry.name.size, entry.name.str);
+      printf("%.*s %.*s %.*s\t%.*s\n", (int)entry.mode.size, entry.mode.str,
+             (int)entry.type.size, entry.type.str, (int)entry.sha.size,
+             entry.sha.str, (int)entry.name.size, entry.name.str);
     }
   }
 
@@ -442,20 +449,37 @@ int main(int argc, char *argv[]) {
 
   const char *command = argv[1];
 
+  int result = 0;
+
   if (strcmp(command, "init") == 0) {
-    return init();
+    result = init();
   } else if (strcmp(command, "cat-file") == 0) {
-    return cat_file(&arena, argv[2], argv[3]);
+    if (argc < 4) {
+      fprintf(stderr, "Usage: %s cat-file <type> <hash>\n", argv[0]);
+      result = 1;
+    } else {
+      result = cat_file(&arena, argv[2], argv[3]);
+    }
   } else if (strcmp(command, "hash-object") == 0) {
-    return hash_object(&arena, argv[2], argv[3]);
+    if (argc < 4) {
+      fprintf(stderr, "Usage: %s hash-object <flag> <file>\n", argv[0]);
+      result = 1;
+    } else {
+      result = hash_object(&arena, argv[2], argv[3]);
+    }
   } else if (strcmp(command, "ls-tree") == 0) {
-    return ls_tree(&arena, argc, argv);
+    if (argc < 3) {
+      fprintf(stderr, "Usage: %s ls-tree [--name-only] <hash>\n", argv[0]);
+      result = 1;
+    } else {
+      result = ls_tree(&arena, argc, argv);
+    }
   } else {
     fprintf(stderr, "Unknown command %s\n", command);
-    return 1;
+    result = 1;
   }
 
   free(arena_backing_buffer);
 
-  return 0;
+  return result;
 }
