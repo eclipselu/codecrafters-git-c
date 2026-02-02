@@ -146,21 +146,17 @@ internal int cat_file(Arena *a, const char *object_type,
 }
 
 internal long get_file_size(FILE *fp) {
-  if (fp == NULL) {
+  int fd = fileno(fp);
+  if (fd == -1) {
     return -1;
   }
 
-  if (fseek(fp, 0L, SEEK_END) != 0) {
-    return -1; // Error (e.g., if fp is stdin)
+  struct stat st;
+  if (fstat(fd, &st) == 0) {
+    return st.st_size;
   }
 
-  // 2. Get the current byte position
-  long size = ftell(fp);
-
-  // 3. Go back to the start so you can actually read the data
-  rewind(fp);
-
-  return size;
+  return -1;
 }
 
 internal int hash_object(Arena *a, const char *flag, const char *file_name) {
