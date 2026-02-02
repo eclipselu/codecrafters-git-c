@@ -7,6 +7,7 @@
 #include <sys/stat.h>
 
 #include <openssl/evp.h>
+#include <sys/types.h>
 #include <zlib.h>
 
 #include "arena.h"
@@ -159,38 +160,74 @@ internal long get_file_size(FILE *fp) {
   return -1;
 }
 
-internal int hash_object(Arena *a, const char *flag, const char *file_name) {
-  // TOOD: this is not always true, user can only hash and do not write to git
-  // objects
-  assert(strcmp(flag, "-w") == 0);
+internal String get_object_file_path(Arena *a, String sha1) {
+  StringArray paths = {0};
+  str_array_push(a, &paths, str_clone_from_cstring(a, ".git/objects"));
+  str_array_push(a, &paths, str_substr(sha1, 0, 2));
+  str_array_push(a, &paths, str_substr(sha1, 2, sha1.size));
 
-  // TODO: limitation 8192 characters for stdin, may need to store to tmp_file
-  // to improve this.
-  uint8_t *stdin_buffer = arena_alloc(a, 8192);
+  String object_path =
+      str_array_join(a, &paths, str_clone_from_cstring(a, "/"));
 
-  FILE *file = NULL;
-  if (strcmp(file_name, "--stdin") == 0) {
-    int bytes_read = fread(stdin_buffer, sizeof(uint8_t), 8192, stdin);
-    file = fmemopen(stdin_buffer, bytes_read, "rb");
-  } else {
-    file = fopen(file_name, "rb");
+  return object_path;
+}
+
+internal String calc_sha1(Arena *a, FILE *fp, String header) {
+  String sha1 = {0};
+
+  EVP_MD_CTX *mdctx = EVP_MD_CTX_new();
+  if (mdctx == NULL) {
+    fprintf(stderr, "Failed to create message digest context\n");
+    return sha1;
   }
 
-  char tmp[] = ".git/objects/tmp_obj_XXXXXX";
-  int tmp_fd = mkstemp(tmp);
+  EVP_DigestInit(mdctx, EVP_sha1());
 
-  // calculate header
-  long file_size = get_file_size(file);
-  if (file_size < 0) {
+  // process header
+  EVP_DigestUpdate(mdctx, header.str, header.size);
+
+  int bytes_read = 0;
+  char buffer[CHUNK];
+
+  while ((bytes_read = fread(buffer, sizeof(char), CHUNK, fp)) > 0) {
+    // do sha1 too
+    EVP_DigestUpdate(mdctx, buffer, bytes_read);
+  }
+
+  uint8_t sha1_digest[EVP_MAX_MD_SIZE];
+  uint32_t hash_len;
+  EVP_DigestFinal(mdctx, sha1_digest, &hash_len);
+
+  uint8_t *sha1_hex_sum = arena_alloc(a, EVP_MAX_MD_SIZE * 2);
+  for (int i = 0; i < hash_len; i++) {
+    snprintf((char *)sha1_hex_sum + 2 * i, sizeof(sha1_hex_sum), "%02x",
+             sha1_digest[i]);
+  }
+
+  sha1.str = sha1_hex_sum;
+  sha1.size = EVP_MAX_MD_SIZE * 2;
+
+  return sha1;
+}
+
+internal int write_object(Arena *a, FILE *infile, String header, String sha1) {
+  TempArenaMemory temp = temp_arena_memory_begin(a);
+
+  char *object_file_path = to_cstring(a, get_object_file_path(a, sha1));
+
+  char object_dir[128];
+  snprintf(object_dir, sizeof(object_dir), ".git/objects/%.2s", sha1.str);
+  if (mkdir(object_dir, 0755) == -1 && errno != EEXIST) {
+    perror("Failed to create object directory");
     return -1;
   }
 
-  String header = {0};
-  header.str = arena_alloc(a, 256);
-  header.size = snprintf((char *)header.str, 256, "blob %ld", file_size);
-  header.size++; // include the '\0' at the end
+  FILE *outfile = fopen(object_file_path, "rb");
+  if (outfile == NULL) {
+    return -1;
+  }
 
-  // do streaming SHA1 and zlib deflate
+  // do streaming zlib deflate
   uint8_t *inbuf = arena_alloc(a, CHUNK);
   uint8_t *outbuf = arena_alloc(a, CHUNK);
 
@@ -202,19 +239,6 @@ internal int hash_object(Arena *a, const char *flag, const char *file_name) {
     return ret;
   }
 
-  EVP_MD_CTX *mdctx = EVP_MD_CTX_new();
-  if (mdctx == NULL) {
-    fprintf(stderr, "Failed to create message digest context\n");
-    deflateEnd(&stream);
-    close(tmp_fd);
-    fclose(file);
-    return -1;
-  }
-  EVP_DigestInit(mdctx, EVP_sha1());
-
-  // process header
-  EVP_DigestUpdate(mdctx, header.str, header.size);
-
   stream.avail_in = header.size;
   stream.next_in = header.str;
   stream.next_out = outbuf;
@@ -223,17 +247,14 @@ internal int hash_object(Arena *a, const char *flag, const char *file_name) {
   ret = deflate(&stream, flush);
 
   int have = CHUNK - stream.avail_out;
-  write(tmp_fd, outbuf, have);
+  fwrite(outbuf, sizeof(uint8_t), have, outfile);
 
   // process content
   do {
-    int bytes_read = fread(inbuf, sizeof(uint8_t), CHUNK, file);
+    int bytes_read = fread(inbuf, sizeof(uint8_t), CHUNK, infile);
     stream.avail_in = bytes_read;
 
-    // do sha1 too
-    EVP_DigestUpdate(mdctx, inbuf, bytes_read);
-
-    if (ferror(file)) {
+    if (ferror(infile)) {
       deflateEnd(&stream);
       return -1;
     }
@@ -241,7 +262,7 @@ internal int hash_object(Arena *a, const char *flag, const char *file_name) {
       break;
     }
 
-    flush = feof(file) ? Z_FINISH : Z_NO_FLUSH;
+    flush = feof(infile) ? Z_FINISH : Z_NO_FLUSH;
     stream.next_in = inbuf;
 
     do {
@@ -255,7 +276,7 @@ internal int hash_object(Arena *a, const char *flag, const char *file_name) {
       }
 
       int have = CHUNK - stream.avail_out;
-      write(tmp_fd, outbuf, have);
+      fwrite(outbuf, sizeof(uint8_t), have, outfile);
 
     } while (stream.avail_out == 0);
 
@@ -263,43 +284,53 @@ internal int hash_object(Arena *a, const char *flag, const char *file_name) {
 
   } while (ret != Z_STREAM_END);
 
-  uint8_t sha1_digest[EVP_MAX_MD_SIZE];
-  uint32_t hash_len;
-  EVP_DigestFinal(mdctx, sha1_digest, &hash_len);
+  // clean up
+  deflateEnd(&stream);
+  fclose(outfile);
 
-  char sha1_hex_sum[EVP_MAX_MD_SIZE * 2 + 1];
-  for (int i = 0; i < hash_len; i++) {
-    snprintf(sha1_hex_sum + 2 * i, sizeof(sha1_hex_sum), "%02x",
-             sha1_digest[i]);
+  temp_arena_memory_end(temp);
+
+  return 0;
+}
+
+internal int hash_object(Arena *a, const char *flag, const char *file_name) {
+  // TOOD: this is not always true, user can only hash and do not write to git
+  // objects
+  assert(strcmp(flag, "-w") == 0);
+
+  FILE *file = NULL;
+  if (strcmp(file_name, "--stdin") == 0) {
+    file = tmpfile();
+    char buffer[4092];
+
+    ssize_t n;
+    while ((n = fread(buffer, sizeof(char), sizeof(buffer), stdin)) > 0) {
+      fwrite(buffer, sizeof(char), n, file);
+    }
+  } else {
+    file = fopen(file_name, "rb");
   }
 
-  // create the object
-  char object_dir[128];
-  snprintf(object_dir, sizeof(object_dir), ".git/objects/%.2s", sha1_hex_sum);
-
-  char object_path[128];
-  snprintf(object_path, sizeof(object_path), "%s/%.38s", object_dir,
-           sha1_hex_sum + 2);
-
-  printf("%s\n", sha1_hex_sum);
-
-  if (mkdir(object_dir, 0755) == -1 && errno != EEXIST) {
-    perror("Failed to create object directory");
+  // calculate header
+  long file_size = get_file_size(file);
+  if (file_size < 0) {
     return -1;
   }
-  if (rename(tmp, object_path) == -1) {
-    perror("rename");
-  }
 
-  // clean up
-  EVP_MD_CTX_free(mdctx);
-  deflateEnd(&stream);
+  String header = {0};
+  header.str = arena_alloc(a, 256);
+  header.size = snprintf((char *)header.str, 256, "blob %ld", file_size);
+  header.size++; // include the '\0' at the end
+
+  String sha1 = calc_sha1(a, file, header);
+  int ret = write_object(a, file, header, sha1);
+
+  // if it's a tmp file, it will be deleted
   if (file != NULL) {
     fclose(file);
   }
-  close(tmp_fd);
 
-  return 0;
+  return ret;
 }
 
 typedef struct Tree_Entry Tree_Entry;
