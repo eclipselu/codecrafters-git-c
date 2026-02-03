@@ -614,7 +614,8 @@ int main(int argc, char *argv[]) {
       fprintf(stderr, "Usage: %s hash-object <flag> <file>\n", argv[0]);
       result = 1;
     } else {
-      hash_object(&arena, argv[2], argv[3]);
+      String hash = hash_object(&arena, argv[2], argv[3]);
+      printf("%.*s\n", (int)hash.size, hash.str);
     }
   } else if (strcmp(command, "ls-tree") == 0) {
     if (argc < 3) {
