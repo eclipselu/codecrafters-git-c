@@ -103,6 +103,22 @@ internal char *to_cstring(Arena *a, String s) {
   return cstr;
 }
 
+internal int str_compare(String a, String b) {
+  uint64_t size = a.size > b.size ? a.size : b.size;
+  int result = 0;
+  for (int i = 0; i < size; ++i) {
+    if (a.str[i] < b.str[i]) {
+      result = -1;
+      break;
+    } else if (a.str[i] > b.str[i]) {
+      result = 1;
+      break;
+    }
+  }
+
+  return result;
+}
+
 internal bool str_equal(String a, String b) {
   bool equal = true;
   if (a.size == b.size) {

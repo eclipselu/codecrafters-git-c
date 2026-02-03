@@ -477,6 +477,12 @@ internal int ls_tree(Arena *a, int argc, char *argv[]) {
   return 0;
 }
 
+internal int compare_tree_entries(const void *a, const void *b) {
+  Tree_Entry *entry_a = (Tree_Entry *)a;
+  Tree_Entry *entry_b = (Tree_Entry *)b;
+  return str_compare(entry_a->name, entry_b->name);
+}
+
 internal String write_tree_object(Arena *a, const char *dirname) {
   struct dirent *dir_entry;
   DIR *dp = opendir(dirname);
@@ -487,6 +493,8 @@ internal String write_tree_object(Arena *a, const char *dirname) {
     perror(dirname);
     return tree_sha1;
   }
+
+  Tree_Entry_Array tree_entries = {0};
 
   FILE *tmp_out_file = tmpfile();
 
@@ -532,12 +540,26 @@ internal String write_tree_object(Arena *a, const char *dirname) {
     }
     String sha_raw_str = {.str = sha_raw, .size = 20};
 
+    Tree_Entry tree_entry = {
+        .mode = entry_mode,
+        .name = entry_name,
+        .sha = sha_raw_str,
+    };
+    tree_entry_array_push(a, &tree_entries, tree_entry);
+  }
+
+  qsort(tree_entries.items, tree_entries.count, sizeof(Tree_Entry),
+        compare_tree_entries);
+
+  for (int i = 0; i < tree_entries.count; ++i) {
+    Tree_Entry entry = tree_entries.items[i];
+
     StringArray arr = {0};
-    str_array_push(a, &arr, entry_mode);
+    str_array_push(a, &arr, entry.mode);
     str_array_push(a, &arr, str_init(" ", 1));
-    str_array_push(a, &arr, entry_name);
+    str_array_push(a, &arr, entry.name);
     str_array_push(a, &arr, str_init("\0", 1));
-    str_array_push(a, &arr, sha_raw_str);
+    str_array_push(a, &arr, entry.sha);
 
     String output_line = str_array_join(a, &arr, str_init("", 0));
 
