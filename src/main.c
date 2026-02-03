@@ -5,9 +5,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-
-#include <openssl/evp.h>
 #include <sys/types.h>
+
+#include <dirent.h>
+#include <openssl/evp.h>
+#include <unistd.h>
 #include <zlib.h>
 
 #include "arena.h"
@@ -172,7 +174,23 @@ internal String get_object_file_path(Arena *a, String sha1) {
   return object_path;
 }
 
-internal String calc_sha1(Arena *a, FILE *fp, String header) {
+internal String calc_header(Arena *a, const char *object_type, FILE *fp) {
+  String header = {0};
+  // calculate header
+  long file_size = get_file_size(fp);
+  if (file_size < 0) {
+    return header;
+  }
+
+  header.str = arena_alloc(a, 256);
+  header.size =
+      snprintf((char *)header.str, 256, "%s %ld", object_type, file_size);
+  header.size++; // include the '\0' at the end
+  return header;
+}
+
+internal String calc_sha1(Arena *a, const char *object_type, FILE *fp) {
+  String header = calc_header(a, object_type, fp);
   String sha1 = {0};
 
   EVP_MD_CTX *mdctx = EVP_MD_CTX_new();
@@ -207,11 +225,17 @@ internal String calc_sha1(Arena *a, FILE *fp, String header) {
   sha1.str = sha1_hex_sum;
   sha1.size = EVP_MAX_MD_SIZE * 2;
 
+  EVP_MD_CTX_destroy(mdctx);
+  rewind(fp);
+
   return sha1;
 }
 
-internal int write_object(Arena *a, FILE *infile, String header, String sha1) {
+internal int write_object(Arena *a, FILE *infile, const char *object_type,
+                          String sha1) {
   TempArenaMemory temp = temp_arena_memory_begin(a);
+
+  String header = calc_header(a, object_type, infile);
 
   char *object_file_path = to_cstring(a, get_object_file_path(a, sha1));
 
@@ -222,7 +246,7 @@ internal int write_object(Arena *a, FILE *infile, String header, String sha1) {
     return -1;
   }
 
-  FILE *outfile = fopen(object_file_path, "rb");
+  FILE *outfile = fopen(object_file_path, "wb");
   if (outfile == NULL) {
     return -1;
   }
@@ -287,13 +311,14 @@ internal int write_object(Arena *a, FILE *infile, String header, String sha1) {
   // clean up
   deflateEnd(&stream);
   fclose(outfile);
+  rewind(infile);
 
   temp_arena_memory_end(temp);
 
   return 0;
 }
 
-internal int hash_object(Arena *a, const char *flag, const char *file_name) {
+internal String hash_object(Arena *a, const char *flag, const char *file_name) {
   // TOOD: this is not always true, user can only hash and do not write to git
   // objects
   assert(strcmp(flag, "-w") == 0);
@@ -311,26 +336,15 @@ internal int hash_object(Arena *a, const char *flag, const char *file_name) {
     file = fopen(file_name, "rb");
   }
 
-  // calculate header
-  long file_size = get_file_size(file);
-  if (file_size < 0) {
-    return -1;
-  }
-
-  String header = {0};
-  header.str = arena_alloc(a, 256);
-  header.size = snprintf((char *)header.str, 256, "blob %ld", file_size);
-  header.size++; // include the '\0' at the end
-
-  String sha1 = calc_sha1(a, file, header);
-  int ret = write_object(a, file, header, sha1);
+  String sha1 = calc_sha1(a, "blob", file);
+  int ret = write_object(a, file, "blob", sha1);
 
   // if it's a tmp file, it will be deleted
   if (file != NULL) {
     fclose(file);
   }
 
-  return ret;
+  return sha1;
 }
 
 typedef struct Tree_Entry Tree_Entry;
@@ -426,8 +440,11 @@ internal int ls_tree(Arena *a, int argc, char *argv[]) {
         .size = 20,
     };
 
-    String type_str =
-        str_init(str_equal_cstr(mode_str, "040000") ? "tree" : "blob", 4);
+    bool is_tree = str_equal_cstr(mode_str, "40000");
+    String type_str = str_init(is_tree ? "tree" : "blob", 4);
+    if (is_tree) {
+      mode_str = str_init("040000", 6);
+    }
 
     char *sha_buf = arena_alloc(a, 40);
     for (int i = 0; i < 20; i++) {
@@ -457,6 +474,89 @@ internal int ls_tree(Arena *a, int argc, char *argv[]) {
     }
   }
 
+  return 0;
+}
+
+internal String write_tree_object(Arena *a, const char *dirname) {
+  struct dirent *dir_entry;
+  DIR *dp = opendir(dirname);
+
+  String tree_sha1 = {0};
+
+  if (dp == NULL) {
+    perror(dirname);
+    return tree_sha1;
+  }
+
+  FILE *tmp_out_file = tmpfile();
+
+  while ((dir_entry = readdir(dp)) != NULL) {
+    if (strcmp(dir_entry->d_name, ".") == 0 ||
+        strcmp(dir_entry->d_name, "..") == 0 ||
+        strcmp(dir_entry->d_name, ".git") == 0) {
+      continue;
+    }
+
+    String entry_name = str_clone_from_cstring(a, dir_entry->d_name);
+    String entry_sha1 = {0};
+    String entry_mode = {0};
+    char file_path[4096];
+    snprintf(file_path, sizeof(file_path), "%s/%s", dirname, dir_entry->d_name);
+
+    // TODO: unify the API a bit, currently it's a bit messy
+    if (dir_entry->d_type == DT_DIR) {
+      entry_mode = str_init("40000", 5);
+      entry_sha1 = write_tree_object(a, file_path);
+    } else if (dir_entry->d_type == DT_LNK) {
+      entry_mode = str_init("120000", 6);
+      // file path is the content
+      FILE *content_fp = fmemopen(file_path, strlen(file_path), "rb");
+      entry_sha1 = calc_sha1(a, "blob", content_fp);
+      write_object(a, content_fp, "blob", entry_sha1);
+
+      fclose(content_fp);
+    } else if (dir_entry->d_type == DT_REG) {
+      if (access(file_path, X_OK) == 0) {
+        entry_mode = str_init("100755", 6);
+      } else {
+        entry_mode = str_init("100644", 6);
+      }
+      entry_sha1 = hash_object(a, "-w", file_path);
+    }
+
+    // Convert hex SHA to raw 20 bytes
+    uint8_t *sha_raw = arena_alloc(a, 20);
+    for (int i = 0; i < 20; i++) {
+      char hex[3] = {entry_sha1.str[2 * i], entry_sha1.str[2 * i + 1], '\0'};
+      sha_raw[i] = (uint8_t)strtol(hex, NULL, 16);
+    }
+    String sha_raw_str = {.str = sha_raw, .size = 20};
+
+    StringArray arr = {0};
+    str_array_push(a, &arr, entry_mode);
+    str_array_push(a, &arr, str_init(" ", 1));
+    str_array_push(a, &arr, entry_name);
+    str_array_push(a, &arr, str_init("\0", 1));
+    str_array_push(a, &arr, sha_raw_str);
+
+    String output_line = str_array_join(a, &arr, str_init("", 0));
+
+    fwrite(output_line.str, sizeof(uint8_t), output_line.size, tmp_out_file);
+  }
+
+  rewind(tmp_out_file);
+  tree_sha1 = calc_sha1(a, "tree", tmp_out_file);
+  write_object(a, tmp_out_file, "tree", tree_sha1);
+
+  fclose(tmp_out_file);
+  closedir(dp);
+
+  return tree_sha1;
+}
+
+internal int write_tree(Arena *a, const char *dirname) {
+  String sha1 = write_tree_object(a, dirname);
+  printf("%.*s\n", (int)sha1.size, sha1.str);
   return 0;
 }
 
@@ -492,7 +592,7 @@ int main(int argc, char *argv[]) {
       fprintf(stderr, "Usage: %s hash-object <flag> <file>\n", argv[0]);
       result = 1;
     } else {
-      result = hash_object(&arena, argv[2], argv[3]);
+      hash_object(&arena, argv[2], argv[3]);
     }
   } else if (strcmp(command, "ls-tree") == 0) {
     if (argc < 3) {
@@ -500,6 +600,13 @@ int main(int argc, char *argv[]) {
       result = 1;
     } else {
       result = ls_tree(&arena, argc, argv);
+    }
+  } else if (strcmp(command, "write-tree") == 0) {
+    if (argc < 2) {
+      fprintf(stderr, "Usage: %s write-tree\n", argv[0]);
+      result = 1;
+    } else {
+      result = write_tree(&arena, ".");
     }
   } else {
     fprintf(stderr, "Unknown command %s\n", command);
