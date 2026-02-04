@@ -216,14 +216,14 @@ internal String calc_sha1(Arena *a, const char *object_type, FILE *fp) {
   uint32_t hash_len;
   EVP_DigestFinal(mdctx, sha1_digest, &hash_len);
 
-  uint8_t *sha1_hex_sum = arena_alloc(a, EVP_MAX_MD_SIZE * 2);
+  uint8_t *sha1_hex_sum = arena_alloc(a, hash_len * 2 + 1);
   for (int i = 0; i < hash_len; i++) {
-    snprintf((char *)sha1_hex_sum + 2 * i, sizeof(sha1_hex_sum), "%02x",
-             sha1_digest[i]);
+    snprintf((char *)sha1_hex_sum + 2 * i, 3, "%02x", sha1_digest[i]);
   }
+  sha1_hex_sum[hash_len * 2] = '\0';
 
   sha1.str = sha1_hex_sum;
-  sha1.size = EVP_MAX_MD_SIZE * 2;
+  sha1.size = hash_len * 2;
 
   EVP_MD_CTX_destroy(mdctx);
   rewind(fp);
@@ -233,8 +233,6 @@ internal String calc_sha1(Arena *a, const char *object_type, FILE *fp) {
 
 internal int write_object(Arena *a, FILE *infile, const char *object_type,
                           String sha1) {
-  TempArenaMemory temp = temp_arena_memory_begin(a);
-
   String header = calc_header(a, object_type, infile);
 
   char *object_file_path = to_cstring(a, get_object_file_path(a, sha1));
@@ -313,8 +311,6 @@ internal int write_object(Arena *a, FILE *infile, const char *object_type,
   fclose(outfile);
   rewind(infile);
 
-  temp_arena_memory_end(temp);
-
   return 0;
 }
 
@@ -349,7 +345,7 @@ internal String hash_object(Arena *a, const char *flag, const char *file_name) {
 
 typedef struct Tree_Entry Tree_Entry;
 struct Tree_Entry {
-  String mode;
+  long mode;
   String type;
   String name;
   String sha;
@@ -412,6 +408,7 @@ internal int ls_tree(Arena *a, int argc, char *argv[]) {
     if (mode_str.size <= 0) {
       break;
     }
+    long mode = strtol(to_cstring(a, mode_str), NULL, 10);
 
     // name
     int name_start = mode_end + 1;
@@ -442,9 +439,6 @@ internal int ls_tree(Arena *a, int argc, char *argv[]) {
 
     bool is_tree = str_equal_cstr(mode_str, "40000");
     String type_str = str_init(is_tree ? "tree" : "blob", 4);
-    if (is_tree) {
-      mode_str = str_init("040000", 6);
-    }
 
     char *sha_buf = arena_alloc(a, 40);
     for (int i = 0; i < 20; i++) {
@@ -456,7 +450,7 @@ internal int ls_tree(Arena *a, int argc, char *argv[]) {
     };
 
     Tree_Entry entry = {
-        .mode = mode_str, .type = type_str, .name = name_str, .sha = sha};
+        .mode = mode, .type = type_str, .name = name_str, .sha = sha};
     tree_entry_array_push(a, &entries, entry);
 
     index = sha_end;
@@ -468,9 +462,9 @@ internal int ls_tree(Arena *a, int argc, char *argv[]) {
     if (name_only) {
       printf("%.*s\n", (int)entry.name.size, entry.name.str);
     } else {
-      printf("%.*s %.*s %.*s\t%.*s\n", (int)entry.mode.size, entry.mode.str,
-             (int)entry.type.size, entry.type.str, (int)entry.sha.size,
-             entry.sha.str, (int)entry.name.size, entry.name.str);
+      printf("%06ld %.*s %.*s\t%.*s\n", entry.mode, (int)entry.type.size,
+             entry.type.str, (int)entry.sha.size, entry.sha.str,
+             (int)entry.name.size, entry.name.str);
     }
   }
 
@@ -507,16 +501,16 @@ internal String write_tree_object(Arena *a, const char *dirname) {
 
     String entry_name = str_clone_from_cstring(a, dir_entry->d_name);
     String entry_sha1 = {0};
-    String entry_mode = {0};
+    long entry_mode = 0;
     char file_path[4096];
     snprintf(file_path, sizeof(file_path), "%s/%s", dirname, dir_entry->d_name);
 
     // TODO: unify the API a bit, currently it's a bit messy
     if (dir_entry->d_type == DT_DIR) {
-      entry_mode = str_init("40000", 5);
+      entry_mode = 40000;
       entry_sha1 = write_tree_object(a, file_path);
     } else if (dir_entry->d_type == DT_LNK) {
-      entry_mode = str_init("120000", 6);
+      entry_mode = 120000;
       // file path is the content
       FILE *content_fp = fmemopen(file_path, strlen(file_path), "rb");
       entry_sha1 = calc_sha1(a, "blob", content_fp);
@@ -525,9 +519,9 @@ internal String write_tree_object(Arena *a, const char *dirname) {
       fclose(content_fp);
     } else if (dir_entry->d_type == DT_REG) {
       if (access(file_path, X_OK) == 0) {
-        entry_mode = str_init("100755", 6);
+        entry_mode = 100755;
       } else {
-        entry_mode = str_init("100644", 6);
+        entry_mode = 100644;
       }
       entry_sha1 = hash_object(a, "-w", file_path);
     }
@@ -551,14 +545,19 @@ internal String write_tree_object(Arena *a, const char *dirname) {
   qsort(tree_entries.items, tree_entries.count, sizeof(Tree_Entry),
         compare_tree_entries);
 
+  String space = str_init(" ", 1);
+  String null_terminator = str_init("\0", 1);
+
   for (int i = 0; i < tree_entries.count; ++i) {
     Tree_Entry entry = tree_entries.items[i];
 
     StringArray arr = {0};
-    str_array_push(a, &arr, entry.mode);
-    str_array_push(a, &arr, str_init(" ", 1));
+    char mode[7];
+    snprintf(mode, sizeof(mode), "%06ld", entry.mode);
+    str_array_push(a, &arr, str_init(mode, 6));
+    str_array_push(a, &arr, space);
     str_array_push(a, &arr, entry.name);
-    str_array_push(a, &arr, str_init("\0", 1));
+    str_array_push(a, &arr, null_terminator);
     str_array_push(a, &arr, entry.sha);
 
     String output_line = str_array_join(a, &arr, str_init("", 0));
