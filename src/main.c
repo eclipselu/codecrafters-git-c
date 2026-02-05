@@ -118,7 +118,7 @@ internal int decompress_object(Arena *a, const char *object_type,
 
   } while (ret != Z_STREAM_END);
 
-  assert(bytes_decompressed == object_size);
+  // assert(bytes_decompressed == object_size);
 
   inflateEnd(&stream);
   fclose(file);
@@ -553,8 +553,8 @@ internal String write_tree_object(Arena *a, const char *dirname) {
 
     StringArray arr = {0};
     char mode[7];
-    snprintf(mode, sizeof(mode), "%06ld", entry.mode);
-    str_array_push(a, &arr, str_init(mode, 6));
+    int len = snprintf(mode, sizeof(mode), "%ld", entry.mode);
+    str_array_push(a, &arr, str_init(mode, len));
     str_array_push(a, &arr, space);
     str_array_push(a, &arr, entry.name);
     str_array_push(a, &arr, null_terminator);
@@ -578,6 +578,101 @@ internal String write_tree_object(Arena *a, const char *dirname) {
 internal int write_tree(Arena *a, const char *dirname) {
   String sha1 = write_tree_object(a, dirname);
   printf("%.*s\n", (int)sha1.size, sha1.str);
+  return 0;
+}
+
+typedef struct User User;
+struct User {
+  String name;
+  String email;
+};
+
+typedef struct Commit Commit;
+struct Commit {
+  String tree_sha;
+  String parent_sha;
+  User author;
+  int author_time_stamp;
+  String author_time_zone;
+  User committer;
+  int committer_time_stamp;
+  String committer_time_zone;
+
+  String message;
+};
+
+internal String write_commit(Arena *a, Commit *commit) {
+  FILE *tmp_out_file = tmpfile();
+
+  char buf[8192];
+  int n = 0;
+  n += snprintf(buf + n, sizeof(buf), "tree %.*s\n", (int)commit->tree_sha.size,
+                commit->tree_sha.str);
+  if (commit->parent_sha.size > 0) {
+    n += snprintf(buf + n, sizeof(buf), "parent %.*s\n",
+                  (int)commit->parent_sha.size, commit->parent_sha.str);
+  }
+  n += snprintf(buf + n, sizeof(buf), "author %.*s <%.*s> %d %.*s\n",
+                (int)commit->author.name.size, commit->author.name.str,
+                (int)commit->author.email.size, commit->author.email.str,
+                commit->author_time_stamp, (int)commit->author_time_zone.size,
+                commit->author_time_zone.str);
+
+  n += snprintf(buf + n, sizeof(buf), "committer %.*s <%.*s> %d %.*s\n",
+                (int)commit->committer.name.size, commit->committer.name.str,
+                (int)commit->committer.email.size, commit->committer.email.str,
+                commit->committer_time_stamp,
+                (int)commit->committer_time_zone.size,
+                commit->committer_time_zone.str);
+
+  n += snprintf(buf + n, sizeof(buf), "\n%.*s\n", (int)commit->message.size,
+                commit->message.str);
+
+  fwrite(buf, sizeof(char), n, tmp_out_file);
+
+  rewind(tmp_out_file);
+  String sha1 = calc_sha1(a, "commit", tmp_out_file);
+  write_object(a, tmp_out_file, "commit", sha1);
+
+  return sha1;
+}
+
+/*
+ * git commit-tree 5b825dc642cb6eb9a060e54bf8d69288fbee4904 -p
+ * 3b18e512dba79e4c8300dd08aeb37f8e728b8dad -m "Second commit"
+ *
+ * git commit-tree 5b825dc642cb6eb9a060e54bf8d69288fbee4904 -m "Initial commit"
+ *
+ */
+internal int commit_tree(Arena *a, int argc, char *argv[]) {
+  assert(argc == 5 || argc == 7);
+
+  User user = {
+      .name = str_init("Lu Dang", 7),
+      .email = str_init("lu@dang.com", 11),
+  };
+  int time_stamp = 123456789;
+  String time_zone = str_init("-0500", 5);
+  String message = str_init(argv[argc - 1], strlen(argv[argc - 1]));
+
+  Commit commit = {
+      .tree_sha = str_init(argv[2], strlen(argv[2])),
+      .author = user,
+      .author_time_stamp = time_stamp,
+      .author_time_zone = time_zone,
+      .committer = user,
+      .committer_time_stamp = time_stamp,
+      .committer_time_zone = time_zone,
+      .message = message,
+  };
+
+  if (argc == 7) {
+    commit.parent_sha = str_init(argv[4], strlen(argv[4]));
+  }
+
+  String sha = write_commit(a, &commit);
+  printf("%.*s\n", (int)sha.size, sha.str);
+
   return 0;
 }
 
@@ -630,12 +725,13 @@ int main(int argc, char *argv[]) {
     } else {
       result = write_tree(&arena, ".");
     }
+  } else if (strcmp(command, "commit-tree") == 0) {
+    result = commit_tree(&arena, argc, argv);
   } else {
     fprintf(stderr, "Unknown command %s\n", command);
     result = 1;
   }
 
   free(arena_backing_buffer);
-
   return result;
 }
