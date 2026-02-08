@@ -6,10 +6,11 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <unistd.h>
 
+#include <curl/curl.h>
 #include <dirent.h>
 #include <openssl/evp.h>
-#include <unistd.h>
 #include <zlib.h>
 
 #include "arena.h"
@@ -676,6 +677,24 @@ internal int commit_tree(Arena *a, int argc, char *argv[]) {
   return 0;
 }
 
+internal int clone_repo(Arena *a, int argc, char *argv[]) {
+  String repo_url = str_init(argv[2], strlen(argv[2]));
+  String query_path = str_init("/info/refs?service=git-upload-pack", 34);
+  String url = str_concat(a, repo_url, query_path);
+
+  CURL *handle = curl_easy_init();
+  struct curl_slist *headers = NULL;
+
+  headers = curl_slist_append(headers, "user-agent: codecrafters-git/0.1");
+  headers = curl_slist_append(headers, "git-protocol: version=2");
+  curl_easy_setopt(handle, CURLOPT_URL, to_cstring(a, url));
+  curl_easy_setopt(handle, CURLOPT_HTTPHEADER, headers);
+
+  CURLcode success = curl_easy_perform(handle);
+
+  return success;
+}
+
 int main(int argc, char *argv[]) {
   // Disable output buffering
   setbuf(stdout, NULL);
@@ -727,6 +746,10 @@ int main(int argc, char *argv[]) {
     }
   } else if (strcmp(command, "commit-tree") == 0) {
     result = commit_tree(&arena, argc, argv);
+  } else if (strcmp(command, "clone") == 0) {
+    curl_global_init(CURL_GLOBAL_ALL);
+    result = clone_repo(&arena, argc, argv);
+    curl_global_cleanup();
   } else {
     fprintf(stderr, "Unknown command %s\n", command);
     result = 1;

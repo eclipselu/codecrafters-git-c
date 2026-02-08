@@ -8,8 +8,10 @@ set(CMAKE_C_STANDARD 23) # Enable the C23 standard
 
 find_package(OpenSSL REQUIRED)
 find_package(ZLIB REQUIRED)
+find_package(CURL REQUIRED)
 
 add_executable(git ${SOURCE_FILES})
 
 target_link_libraries(git PRIVATE OpenSSL::Crypto)
 target_link_libraries(git PRIVATE ZLIB::ZLIB)
+target_link_libraries(git PRIVATE CURL::libcurl)
