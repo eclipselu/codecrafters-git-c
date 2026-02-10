@@ -131,7 +131,7 @@ internal int cat_file(Arena *a, const char *object_type,
                       const char *object_hash) {
   assert(strcmp(object_type, "-p") == 0);
 
-  String hash = str_init(object_hash, strlen(object_hash));
+  String hash = str_literal(object_hash);
   StringArray paths = {0};
   str_array_push(a, &paths, str_clone_from_cstring(a, ".git/objects"));
   str_array_push(a, &paths, str_substr(hash, 0, 2));
@@ -378,7 +378,7 @@ internal int ls_tree(Arena *a, int argc, char *argv[]) {
   char *tree_sha = argv[argc - 1];
   bool name_only = strcmp(argv[2], "--name-only") == 0;
 
-  String hash = str_init(tree_sha, strlen(tree_sha));
+  String hash = str_literal(tree_sha);
   StringArray paths = {0};
   str_array_push(a, &paths, str_clone_from_cstring(a, ".git/objects"));
   str_array_push(a, &paths, str_substr(hash, 0, 2));
@@ -439,7 +439,7 @@ internal int ls_tree(Arena *a, int argc, char *argv[]) {
     };
 
     bool is_tree = str_equal_cstr(mode_str, "40000");
-    String type_str = str_init(is_tree ? "tree" : "blob", 4);
+    String type_str = str_literal(is_tree ? "tree" : "blob");
 
     char *sha_buf = arena_alloc(a, 40);
     for (int i = 0; i < 20; i++) {
@@ -546,22 +546,22 @@ internal String write_tree_object(Arena *a, const char *dirname) {
   qsort(tree_entries.items, tree_entries.count, sizeof(Tree_Entry),
         compare_tree_entries);
 
-  String space = str_init(" ", 1);
-  String null_terminator = str_init("\0", 1);
+  String space = str_literal(" ");
+  String null_terminator = str_literal("\0");
 
   for (int i = 0; i < tree_entries.count; ++i) {
     Tree_Entry entry = tree_entries.items[i];
 
     StringArray arr = {0};
-    char mode[7];
+    char mode[16];
     int len = snprintf(mode, sizeof(mode), "%ld", entry.mode);
-    str_array_push(a, &arr, str_init(mode, len));
+    str_array_push(a, &arr, str_literal(mode));
     str_array_push(a, &arr, space);
     str_array_push(a, &arr, entry.name);
     str_array_push(a, &arr, null_terminator);
     str_array_push(a, &arr, entry.sha);
 
-    String output_line = str_array_join(a, &arr, str_init("", 0));
+    String output_line = str_array_join(a, &arr, str_literal(""));
 
     fwrite(output_line.str, sizeof(uint8_t), output_line.size, tmp_out_file);
   }
@@ -649,15 +649,15 @@ internal int commit_tree(Arena *a, int argc, char *argv[]) {
   assert(argc == 5 || argc == 7);
 
   User user = {
-      .name = str_init("Lu Dang", 7),
-      .email = str_init("lu@dang.com", 11),
+      .name = str_literal("Lu Dang"),
+      .email = str_literal("lu@dang.com"),
   };
   int time_stamp = 123456789;
-  String time_zone = str_init("-0500", 5);
-  String message = str_init(argv[argc - 1], strlen(argv[argc - 1]));
+  String time_zone = str_literal("-0500");
+  String message = str_literal(argv[argc - 1]);
 
   Commit commit = {
-      .tree_sha = str_init(argv[2], strlen(argv[2])),
+      .tree_sha = str_literal(argv[2]),
       .author = user,
       .author_time_stamp = time_stamp,
       .author_time_zone = time_zone,
@@ -668,7 +668,7 @@ internal int commit_tree(Arena *a, int argc, char *argv[]) {
   };
 
   if (argc == 7) {
-    commit.parent_sha = str_init(argv[4], strlen(argv[4]));
+    commit.parent_sha = str_literal(argv[4]);
   }
 
   String sha = write_commit(a, &commit);
@@ -678,15 +678,15 @@ internal int commit_tree(Arena *a, int argc, char *argv[]) {
 }
 
 internal int clone_repo(Arena *a, int argc, char *argv[]) {
-  String repo_url = str_init(argv[2], strlen(argv[2]));
-  String query_path = str_init("/info/refs?service=git-upload-pack", 34);
+  String repo_url = str_literal(argv[2]);
+  String query_path = str_literal("/info/refs?service=git-upload-pack");
   String url = str_concat(a, repo_url, query_path);
 
   CURL *handle = curl_easy_init();
   struct curl_slist *headers = NULL;
 
-  headers = curl_slist_append(headers, "user-agent: codecrafters-git/0.1");
   headers = curl_slist_append(headers, "git-protocol: version=2");
+  curl_easy_setopt(handle, CURLOPT_USERAGENT, "codecrafters-git/0.1");
   curl_easy_setopt(handle, CURLOPT_URL, to_cstring(a, url));
   curl_easy_setopt(handle, CURLOPT_HTTPHEADER, headers);
 

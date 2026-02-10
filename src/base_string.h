@@ -88,6 +88,11 @@ internal String str_init(const char *str, uint64_t size) {
   return result;
 }
 
+internal String str_literal(const char *str) {
+  uint64_t size = strlen(str);
+  return str_init(str, size);
+}
+
 internal String str_clone_from_cstring(Arena *a, const char *str) {
   uint64_t size = strlen(str);
   uint8_t *buf = (uint8_t *)arena_alloc(a, size);
