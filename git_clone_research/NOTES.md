@@ -8,3 +8,9 @@
    - `git config --global --unset http.proxy`
 - Inspect: `mitmweb -r dump.txt`
 
+# Libcurl
+
+## receiving data:
+
+- https://www.youtube.com/watch?v=nbTaHEocCuo
+

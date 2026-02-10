@@ -17,7 +17,7 @@
 #include "base.h"
 #include "base_string.h"
 
-#define CHUNK 16384
+#define ZLIB_CHUNK_SIZE 16384
 
 internal int init() {
   // You can use print statements as follows for debugging, they'll be visible
@@ -63,14 +63,14 @@ internal int decompress_object(Arena *a, const char *object_type,
     return ret;
   }
 
-  uint8_t *inbuf = arena_alloc(a, CHUNK);
-  uint8_t *outbuf = arena_alloc(a, CHUNK);
+  uint8_t *inbuf = arena_alloc(a, ZLIB_CHUNK_SIZE);
+  uint8_t *outbuf = arena_alloc(a, ZLIB_CHUNK_SIZE);
 
   uint64_t bytes_decompressed = 0;
   uint64_t object_size = 0;
 
   do {
-    stream.avail_in = fread(inbuf, sizeof(uint8_t), CHUNK, file);
+    stream.avail_in = fread(inbuf, sizeof(uint8_t), ZLIB_CHUNK_SIZE, file);
     if (ferror(file)) {
       inflateEnd(&stream);
       return -1;
@@ -83,7 +83,7 @@ internal int decompress_object(Arena *a, const char *object_type,
     stream.next_in = inbuf;
 
     do {
-      stream.avail_out = CHUNK;
+      stream.avail_out = ZLIB_CHUNK_SIZE;
       stream.next_out = outbuf;
 
       ret = inflate(&stream, flush);
@@ -92,7 +92,7 @@ internal int decompress_object(Arena *a, const char *object_type,
         return ret;
       }
 
-      int have = CHUNK - stream.avail_out;
+      int have = ZLIB_CHUNK_SIZE - stream.avail_out;
 
       uint8_t *ptr = outbuf;
       if (*dest == NULL) {
@@ -206,9 +206,9 @@ internal String calc_sha1(Arena *a, const char *object_type, FILE *fp) {
   EVP_DigestUpdate(mdctx, header.str, header.size);
 
   int bytes_read = 0;
-  char buffer[CHUNK];
+  char buffer[ZLIB_CHUNK_SIZE];
 
-  while ((bytes_read = fread(buffer, sizeof(char), CHUNK, fp)) > 0) {
+  while ((bytes_read = fread(buffer, sizeof(char), ZLIB_CHUNK_SIZE, fp)) > 0) {
     // do sha1 too
     EVP_DigestUpdate(mdctx, buffer, bytes_read);
   }
@@ -251,8 +251,8 @@ internal int write_object(Arena *a, FILE *infile, const char *object_type,
   }
 
   // do streaming zlib deflate
-  uint8_t *inbuf = arena_alloc(a, CHUNK);
-  uint8_t *outbuf = arena_alloc(a, CHUNK);
+  uint8_t *inbuf = arena_alloc(a, ZLIB_CHUNK_SIZE);
+  uint8_t *outbuf = arena_alloc(a, ZLIB_CHUNK_SIZE);
 
   z_stream stream = {0};
   int ret = deflateInit(&stream, Z_DEFAULT_COMPRESSION);
@@ -265,16 +265,16 @@ internal int write_object(Arena *a, FILE *infile, const char *object_type,
   stream.avail_in = header.size;
   stream.next_in = header.str;
   stream.next_out = outbuf;
-  stream.avail_out = CHUNK;
+  stream.avail_out = ZLIB_CHUNK_SIZE;
 
   ret = deflate(&stream, flush);
 
-  int have = CHUNK - stream.avail_out;
+  int have = ZLIB_CHUNK_SIZE - stream.avail_out;
   fwrite(outbuf, sizeof(uint8_t), have, outfile);
 
   // process content
   do {
-    int bytes_read = fread(inbuf, sizeof(uint8_t), CHUNK, infile);
+    int bytes_read = fread(inbuf, sizeof(uint8_t), ZLIB_CHUNK_SIZE, infile);
     stream.avail_in = bytes_read;
 
     if (ferror(infile)) {
@@ -289,7 +289,7 @@ internal int write_object(Arena *a, FILE *infile, const char *object_type,
     stream.next_in = inbuf;
 
     do {
-      stream.avail_out = CHUNK;
+      stream.avail_out = ZLIB_CHUNK_SIZE;
       stream.next_out = outbuf;
 
       ret = deflate(&stream, flush);
@@ -298,7 +298,7 @@ internal int write_object(Arena *a, FILE *infile, const char *object_type,
         return ret;
       }
 
-      int have = CHUNK - stream.avail_out;
+      int have = ZLIB_CHUNK_SIZE - stream.avail_out;
       fwrite(outbuf, sizeof(uint8_t), have, outfile);
 
     } while (stream.avail_out == 0);

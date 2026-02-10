@@ -5,6 +5,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
+#include <sys/types.h>
 
 #include "base.h"
 
@@ -61,6 +62,43 @@ internal void *arena_alloc_align(Arena *a, size_t size, size_t align) {
 
 internal void *arena_alloc(Arena *a, size_t size) {
   return arena_alloc_align(a, size, DEFAULT_ALIGNMENT);
+}
+
+internal void *arena_realloc(Arena *a, void *old_ptr, size_t old_size,
+                             size_t new_size) {
+  if (old_ptr == NULL) {
+    return arena_alloc(a, new_size);
+  }
+
+  if (new_size <= old_size) {
+    return old_ptr;
+  }
+
+  uintptr_t arena_start = (uintptr_t)a->buf;
+  uintptr_t arena_end = arena_start + a->buf_size;
+  uintptr_t old_start = (uintptr_t)old_ptr;
+  if (old_start < arena_start || old_start > arena_end) {
+    return NULL;
+  }
+
+  uintptr_t old_end = (uintptr_t)old_ptr + old_size;
+  uintptr_t arena_curr_end = (uintptr_t)a->buf + a->curr_offset;
+  void *new_ptr = NULL;
+
+  if (old_end == arena_curr_end) {
+    // old_ptr is the last allocated memory on arena, allocate the diff
+    void *grow_ptr = arena_alloc_align(a, new_size - old_size, 1);
+    if (grow_ptr != NULL) {
+      new_ptr = old_ptr;
+    }
+  } else {
+    new_ptr = arena_alloc(a, new_size);
+    if (new_ptr != NULL) {
+      memcpy(new_ptr, old_ptr, old_size);
+    }
+  }
+
+  return new_ptr;
 }
 
 internal void arena_free_all(Arena *a) {
