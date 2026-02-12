@@ -57,3 +57,27 @@ alias mygit=/path/to/your/repo/your_program.sh
 mkdir -p /tmp/testing && cd /tmp/testing
 mygit init
 ```
+
+# TODO
+
+- [ ] Refactor argument parsing to use `getopt_long` instead of manual loops.
+  Currently flags like `--name-only` are parsed with a hand-written `for` loop.
+  For more robust and idiomatic C flag parsing, consider using
+  [`getopt_long(3)`](https://man7.org/linux/man-pages/man3/getopt.3.html):
+  ```c
+  #include <getopt.h>
+
+  static struct option long_options[] = {
+      {"name-only", no_argument, 0, 'n'},
+      {0, 0, 0, 0},
+  };
+
+  int opt;
+  while ((opt = getopt_long(argc, argv, "n", long_options, NULL)) != -1) {
+      switch (opt) {
+          case 'n': name_only = true; break;
+          default: fprintf(stderr, "Usage: ...\n"); return 1;
+      }
+  }
+  char *tree_sha = argv[optind]; // first non-option argument
+  ```

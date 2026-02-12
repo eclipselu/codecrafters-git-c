@@ -55,7 +55,7 @@ internal String str_array_join(Arena *a, StringArray *arr, String delimiter) {
   }
 
   uint64_t total_size = 0;
-  for (int i = 0; i < arr->count; ++i) {
+  for (uint64_t i = 0; i < arr->count; ++i) {
     total_size += arr->items[i].size;
   }
 
@@ -68,7 +68,7 @@ internal String str_array_join(Arena *a, StringArray *arr, String delimiter) {
   memcpy(ptr, arr->items[0].str, arr->items[0].size);
   ptr += arr->items[0].size;
 
-  for (int i = 1; i < arr->count; ++i) {
+  for (uint64_t i = 1; i < arr->count; ++i) {
     String item = arr->items[i];
     if (delimiter.size > 0) {
       memcpy(ptr, delimiter.str, delimiter.size);
@@ -109,25 +109,20 @@ internal char *to_cstring(Arena *a, String s) {
 }
 
 internal int str_compare(String a, String b) {
-  uint64_t size = a.size > b.size ? a.size : b.size;
-  int result = 0;
-  for (int i = 0; i < size; ++i) {
-    if (a.str[i] < b.str[i]) {
-      result = -1;
-      break;
-    } else if (a.str[i] > b.str[i]) {
-      result = 1;
-      break;
-    }
+  uint64_t size = a.size < b.size ? a.size : b.size;
+  for (uint64_t i = 0; i < size; ++i) {
+    if (a.str[i] < b.str[i]) return -1;
+    if (a.str[i] > b.str[i]) return 1;
   }
-
-  return result;
+  if (a.size < b.size) return -1;
+  if (a.size > b.size) return 1;
+  return 0;
 }
 
 internal bool str_equal(String a, String b) {
   bool equal = true;
   if (a.size == b.size) {
-    for (int i = 0; i < a.size; i += 1) {
+    for (uint64_t i = 0; i < a.size; i += 1) {
       if (a.str[i] != b.str[i]) {
         equal = false;
         break;
@@ -141,7 +136,7 @@ internal bool str_equal(String a, String b) {
 
 internal bool str_is_posnum(String s) {
   bool result = true;
-  for (int i = 0; i < s.size; i += 1) {
+  for (uint64_t i = 0; i < s.size; i += 1) {
     if (s.str[i] < '0' || s.str[i] > '9') {
       result = false;
       break;
@@ -161,7 +156,7 @@ internal bool str_starts_with_cstr(String s, const char *cstr) {
   size_t len = strlen(cstr);
   bool result = true;
   if (len <= s.size) {
-    for (int idx = 0; idx < len; idx += 1) {
+    for (size_t idx = 0; idx < len; idx += 1) {
       if (s.str[idx] != cstr[idx]) {
         result = false;
         break;
@@ -180,8 +175,9 @@ internal bool str_ends_with_cstr(String s, const char *cstr) {
   size_t len = strlen(cstr);
   bool result = true;
   if (len <= s.size) {
-    for (int idx = s.size - len; idx < s.size; idx += 1) {
-      if (s.str[idx] != cstr[idx]) {
+    uint64_t offset = s.size - len;
+    for (size_t idx = 0; idx < len; idx += 1) {
+      if (s.str[offset + idx] != cstr[idx]) {
         result = false;
         break;
       }
@@ -228,7 +224,7 @@ internal StringList str_split(Arena *a, String string, String split_chars) {
     for (; ptr < end; ptr += 1) {
       uint8_t ch = *ptr;
 
-      for (int i = 0; i < split_chars.size; i += 1) {
+      for (uint64_t i = 0; i < split_chars.size; i += 1) {
         if (split_chars.str[i] == ch) {
           found = true;
           break;

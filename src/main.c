@@ -43,10 +43,22 @@ internal int init() {
   return 0;
 }
 
+internal String get_object_file_path(Arena *a, String sha1) {
+  StringArray paths = {0};
+  str_array_push(a, &paths, str_clone_from_cstring(a, ".git/objects"));
+  str_array_push(a, &paths, str_substr(sha1, 0, 2));
+  str_array_push(a, &paths, str_substr(sha1, 2, sha1.size));
+
+  String object_path =
+      str_array_join(a, &paths, str_clone_from_cstring(a, "/"));
+
+  return object_path;
+}
+
 // use zlib to decompress object and print
 // decompressed data will be written into dest
 // returns: number of bytes decompressed into dest
-internal int decompress_object(Arena *a, const char *object_type,
+internal int64_t decompress_object(Arena *a, const char *object_type,
                                String object_path, uint8_t **dest) {
   const char *path = to_cstring(a, object_path);
   FILE *file = fopen(path, "rb");
@@ -60,6 +72,7 @@ internal int decompress_object(Arena *a, const char *object_type,
   int ret = inflateInit(&stream);
   if (ret != Z_OK) {
     fprintf(stderr, "Inflate failure\n");
+    fclose(file);
     return ret;
   }
 
@@ -73,6 +86,7 @@ internal int decompress_object(Arena *a, const char *object_type,
     stream.avail_in = fread(inbuf, sizeof(uint8_t), ZLIB_CHUNK_SIZE, file);
     if (ferror(file)) {
       inflateEnd(&stream);
+      fclose(file);
       return -1;
     }
     if (stream.avail_in == 0) {
@@ -89,6 +103,7 @@ internal int decompress_object(Arena *a, const char *object_type,
       ret = inflate(&stream, flush);
       if (ret == Z_STREAM_ERROR || ret == Z_DATA_ERROR) {
         inflateEnd(&stream);
+        fclose(file);
         return ret;
       }
 
@@ -96,7 +111,7 @@ internal int decompress_object(Arena *a, const char *object_type,
 
       uint8_t *ptr = outbuf;
       if (*dest == NULL) {
-        while (*ptr != '\0')
+        while (ptr < outbuf + have && *ptr != '\0')
           ++ptr;
         ++ptr;
 
@@ -111,6 +126,8 @@ internal int decompress_object(Arena *a, const char *object_type,
             str_substr(header, strlen(object_type) + 1, header.size);
         object_size = atoi(to_cstring(a, blob_size));
         *dest = arena_alloc(a, object_size);
+      } else {
+        ptr = outbuf;
       }
       memcpy((*dest) + bytes_decompressed, ptr, have);
       bytes_decompressed += have;
@@ -132,13 +149,7 @@ internal int cat_file(Arena *a, const char *object_type,
   assert(strcmp(object_type, "-p") == 0);
 
   String hash = str_literal(object_hash);
-  StringArray paths = {0};
-  str_array_push(a, &paths, str_clone_from_cstring(a, ".git/objects"));
-  str_array_push(a, &paths, str_substr(hash, 0, 2));
-  str_array_push(a, &paths, str_substr(hash, 2, hash.size));
-
-  String object_path =
-      str_array_join(a, &paths, str_clone_from_cstring(a, "/"));
+  String object_path = get_object_file_path(a, hash);
 
   uint8_t *content = NULL;
   uint64_t bytes_decompressed =
@@ -161,18 +172,6 @@ internal long get_file_size(FILE *fp) {
   }
 
   return -1;
-}
-
-internal String get_object_file_path(Arena *a, String sha1) {
-  StringArray paths = {0};
-  str_array_push(a, &paths, str_clone_from_cstring(a, ".git/objects"));
-  str_array_push(a, &paths, str_substr(sha1, 0, 2));
-  str_array_push(a, &paths, str_substr(sha1, 2, sha1.size));
-
-  String object_path =
-      str_array_join(a, &paths, str_clone_from_cstring(a, "/"));
-
-  return object_path;
 }
 
 internal String calc_header(Arena *a, const char *object_type, FILE *fp) {
@@ -239,7 +238,11 @@ internal int write_object(Arena *a, FILE *infile, const char *object_type,
   char *object_file_path = to_cstring(a, get_object_file_path(a, sha1));
 
   char object_dir[128];
-  snprintf(object_dir, sizeof(object_dir), ".git/objects/%.2s", sha1.str);
+  int dir_len = snprintf(object_dir, sizeof(object_dir), ".git/objects/%.2s", sha1.str);
+  if (dir_len < 0 || (size_t)dir_len >= sizeof(object_dir)) {
+    fprintf(stderr, "Object directory path too long\n");
+    return -1;
+  }
   if (mkdir(object_dir, 0755) == -1 && errno != EEXIST) {
     perror("Failed to create object directory");
     return -1;
@@ -259,6 +262,7 @@ internal int write_object(Arena *a, FILE *infile, const char *object_type,
   int flush = Z_NO_FLUSH;
   if (ret != Z_OK) {
     fprintf(stderr, "Deflate init failure\n");
+    fclose(outfile);
     return ret;
   }
 
@@ -279,6 +283,7 @@ internal int write_object(Arena *a, FILE *infile, const char *object_type,
 
     if (ferror(infile)) {
       deflateEnd(&stream);
+      fclose(outfile);
       return -1;
     }
     if (stream.avail_in == 0) {
@@ -295,10 +300,9 @@ internal int write_object(Arena *a, FILE *infile, const char *object_type,
       ret = deflate(&stream, flush);
       if (ret == Z_STREAM_ERROR || ret == Z_DATA_ERROR) {
         deflateEnd(&stream);
+        fclose(outfile);
         return ret;
-      }
-
-      int have = ZLIB_CHUNK_SIZE - stream.avail_out;
+      }      int have = ZLIB_CHUNK_SIZE - stream.avail_out;
       fwrite(outbuf, sizeof(uint8_t), have, outfile);
 
     } while (stream.avail_out == 0);
@@ -329,6 +333,7 @@ internal String hash_object(Arena *a, const char *flag, const char *file_name) {
     while ((n = fread(buffer, sizeof(char), sizeof(buffer), stdin)) > 0) {
       fwrite(buffer, sizeof(char), n, file);
     }
+    rewind(file);
   } else {
     file = fopen(file_name, "rb");
   }
@@ -375,17 +380,24 @@ internal void tree_entry_array_push(Arena *a, Tree_Entry_Array *arr,
 }
 
 internal int ls_tree(Arena *a, int argc, char *argv[]) {
-  char *tree_sha = argv[argc - 1];
-  bool name_only = strcmp(argv[2], "--name-only") == 0;
+  char *tree_sha = NULL;
+  bool name_only = false;
+
+  for (int i = 2; i < argc; ++i) {
+    if (strcmp(argv[i], "--name-only") == 0) {
+      name_only = true;
+    } else {
+      tree_sha = argv[i];
+    }
+  }
+
+  if (tree_sha == NULL) {
+    fprintf(stderr, "Usage: %s ls-tree [--name-only] <hash>\n", argv[0]);
+    return 1;
+  }
 
   String hash = str_literal(tree_sha);
-  StringArray paths = {0};
-  str_array_push(a, &paths, str_clone_from_cstring(a, ".git/objects"));
-  str_array_push(a, &paths, str_substr(hash, 0, 2));
-  str_array_push(a, &paths, str_substr(hash, 2, hash.size));
-
-  String object_path =
-      str_array_join(a, &paths, str_clone_from_cstring(a, "/"));
+  String object_path = get_object_file_path(a, hash);
 
   Tree_Entry_Array entries = {0};
 
@@ -394,10 +406,10 @@ internal int ls_tree(Arena *a, int argc, char *argv[]) {
   uint64_t bytes_decompressed =
       decompress_object(a, "tree", object_path, &content);
 
-  int index = 0;
+  int64_t index = 0;
   while (index < bytes_decompressed) {
     // mode
-    int mode_end = index;
+    int64_t mode_end = index;
     while (mode_end < bytes_decompressed && content[mode_end] != ' ') {
       ++mode_end;
     }
@@ -412,8 +424,8 @@ internal int ls_tree(Arena *a, int argc, char *argv[]) {
     long mode = strtol(to_cstring(a, mode_str), NULL, 10);
 
     // name
-    int name_start = mode_end + 1;
-    int name_end = mode_end + 1;
+    int64_t name_start = mode_end + 1;
+    int64_t name_end = mode_end + 1;
     while (name_end < bytes_decompressed && content[name_end] != '\0') {
       ++name_end;
     }
@@ -427,8 +439,8 @@ internal int ls_tree(Arena *a, int argc, char *argv[]) {
     }
 
     // sha
-    int sha_start = name_end + 1;
-    int sha_end = sha_start + 20;
+    int64_t sha_start = name_end + 1;
+    int64_t sha_end = sha_start + 20;
     if (sha_end > bytes_decompressed) {
       break;
     }
@@ -457,7 +469,7 @@ internal int ls_tree(Arena *a, int argc, char *argv[]) {
     index = sha_end;
   }
 
-  for (int i = 0; i < entries.count; ++i) {
+  for (uint64_t i = 0; i < entries.count; ++i) {
     Tree_Entry entry = entries.items[i];
 
     if (name_only) {
@@ -503,8 +515,12 @@ internal String write_tree_object(Arena *a, const char *dirname) {
     String entry_name = str_clone_from_cstring(a, dir_entry->d_name);
     String entry_sha1 = {0};
     long entry_mode = 0;
-    char file_path[4096];
-    snprintf(file_path, sizeof(file_path), "%s/%s", dirname, dir_entry->d_name);
+    char file_path[PATH_MAX_LEN];
+    int path_len = snprintf(file_path, sizeof(file_path), "%s/%s", dirname, dir_entry->d_name);
+    if (path_len < 0 || (size_t)path_len >= sizeof(file_path)) {
+      fprintf(stderr, "File path too long: %s/%s\n", dirname, dir_entry->d_name);
+      continue;
+    }
 
     // TODO: unify the API a bit, currently it's a bit messy
     if (dir_entry->d_type == DT_DIR) {
@@ -549,13 +565,13 @@ internal String write_tree_object(Arena *a, const char *dirname) {
   String space = str_literal(" ");
   String null_terminator = str_literal("\0");
 
-  for (int i = 0; i < tree_entries.count; ++i) {
+  for (uint64_t i = 0; i < tree_entries.count; ++i) {
     Tree_Entry entry = tree_entries.items[i];
 
     StringArray arr = {0};
     char mode[16];
     int len = snprintf(mode, sizeof(mode), "%ld", entry.mode);
-    str_array_push(a, &arr, str_literal(mode));
+    str_array_push(a, &arr, str_clone_from_cstring(a, mode));
     str_array_push(a, &arr, space);
     str_array_push(a, &arr, entry.name);
     str_array_push(a, &arr, null_terminator);
@@ -607,26 +623,26 @@ internal String write_commit(Arena *a, Commit *commit) {
 
   char buf[8192];
   int n = 0;
-  n += snprintf(buf + n, sizeof(buf), "tree %.*s\n", (int)commit->tree_sha.size,
-                commit->tree_sha.str);
+  n += snprintf(buf + n, sizeof(buf) - n, "tree %.*s\n",
+                (int)commit->tree_sha.size, commit->tree_sha.str);
   if (commit->parent_sha.size > 0) {
-    n += snprintf(buf + n, sizeof(buf), "parent %.*s\n",
+    n += snprintf(buf + n, sizeof(buf) - n, "parent %.*s\n",
                   (int)commit->parent_sha.size, commit->parent_sha.str);
   }
-  n += snprintf(buf + n, sizeof(buf), "author %.*s <%.*s> %d %.*s\n",
+  n += snprintf(buf + n, sizeof(buf) - n, "author %.*s <%.*s> %d %.*s\n",
                 (int)commit->author.name.size, commit->author.name.str,
                 (int)commit->author.email.size, commit->author.email.str,
                 commit->author_time_stamp, (int)commit->author_time_zone.size,
                 commit->author_time_zone.str);
 
-  n += snprintf(buf + n, sizeof(buf), "committer %.*s <%.*s> %d %.*s\n",
+  n += snprintf(buf + n, sizeof(buf) - n, "committer %.*s <%.*s> %d %.*s\n",
                 (int)commit->committer.name.size, commit->committer.name.str,
                 (int)commit->committer.email.size, commit->committer.email.str,
                 commit->committer_time_stamp,
                 (int)commit->committer_time_zone.size,
                 commit->committer_time_zone.str);
 
-  n += snprintf(buf + n, sizeof(buf), "\n%.*s\n", (int)commit->message.size,
+  n += snprintf(buf + n, sizeof(buf) - n, "\n%.*s\n", (int)commit->message.size,
                 commit->message.str);
 
   fwrite(buf, sizeof(char), n, tmp_out_file);
