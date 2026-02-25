@@ -19,6 +19,33 @@
 
 #define ZLIB_CHUNK_SIZE 16384
 
+typedef struct CurlWriteContext CurlWriteContext;
+struct CurlWriteContext {
+  Arena *arena;
+  String *chunk;
+};
+
+internal size_t curl_write_to_chunk(char *ptr, size_t size, size_t nmemb,
+                                    void *userdata) {
+  CurlWriteContext *ctx = (CurlWriteContext *)userdata;
+  size_t bytes = size * nmemb;
+  uint64_t new_size = ctx->chunk->size + bytes;
+  uint64_t old_size = ctx->chunk->size;
+
+  uint8_t *new_buf =
+      arena_realloc(ctx->arena, ctx->chunk->str, old_size, new_size);
+  if (new_buf == NULL) {
+    return 0;
+  }
+
+  ctx->chunk->str = new_buf;
+  ctx->chunk->size = new_size;
+
+  memcpy(ctx->chunk->str + old_size, ptr, bytes);
+  ctx->chunk->size += bytes;
+  return bytes;
+}
+
 internal int init() {
   // You can use print statements as follows for debugging, they'll be visible
   // when running tests.
@@ -59,7 +86,7 @@ internal String get_object_file_path(Arena *a, String sha1) {
 // decompressed data will be written into dest
 // returns: number of bytes decompressed into dest
 internal int64_t decompress_object(Arena *a, const char *object_type,
-                               String object_path, uint8_t **dest) {
+                                   String object_path, uint8_t **dest) {
   const char *path = to_cstring(a, object_path);
   FILE *file = fopen(path, "rb");
   if (file == NULL) {
@@ -238,7 +265,8 @@ internal int write_object(Arena *a, FILE *infile, const char *object_type,
   char *object_file_path = to_cstring(a, get_object_file_path(a, sha1));
 
   char object_dir[128];
-  int dir_len = snprintf(object_dir, sizeof(object_dir), ".git/objects/%.2s", sha1.str);
+  int dir_len =
+      snprintf(object_dir, sizeof(object_dir), ".git/objects/%.2s", sha1.str);
   if (dir_len < 0 || (size_t)dir_len >= sizeof(object_dir)) {
     fprintf(stderr, "Object directory path too long\n");
     return -1;
@@ -302,7 +330,8 @@ internal int write_object(Arena *a, FILE *infile, const char *object_type,
         deflateEnd(&stream);
         fclose(outfile);
         return ret;
-      }      int have = ZLIB_CHUNK_SIZE - stream.avail_out;
+      }
+      int have = ZLIB_CHUNK_SIZE - stream.avail_out;
       fwrite(outbuf, sizeof(uint8_t), have, outfile);
 
     } while (stream.avail_out == 0);
@@ -516,9 +545,11 @@ internal String write_tree_object(Arena *a, const char *dirname) {
     String entry_sha1 = {0};
     long entry_mode = 0;
     char file_path[PATH_MAX_LEN];
-    int path_len = snprintf(file_path, sizeof(file_path), "%s/%s", dirname, dir_entry->d_name);
+    int path_len = snprintf(file_path, sizeof(file_path), "%s/%s", dirname,
+                            dir_entry->d_name);
     if (path_len < 0 || (size_t)path_len >= sizeof(file_path)) {
-      fprintf(stderr, "File path too long: %s/%s\n", dirname, dir_entry->d_name);
+      fprintf(stderr, "File path too long: %s/%s\n", dirname,
+              dir_entry->d_name);
       continue;
     }
 
@@ -701,12 +732,24 @@ internal int clone_repo(Arena *a, int argc, char *argv[]) {
   CURL *handle = curl_easy_init();
   struct curl_slist *headers = NULL;
 
+  String chunk = {0};
+  CurlWriteContext write_ctx = {
+      .arena = a,
+      .chunk = &chunk,
+      .capacity = 0,
+  };
   headers = curl_slist_append(headers, "git-protocol: version=2");
-  curl_easy_setopt(handle, CURLOPT_USERAGENT, "codecrafters-git/0.1");
-  curl_easy_setopt(handle, CURLOPT_URL, to_cstring(a, url));
+  headers = curl_slist_append(headers, "User-Agent: git/2.52.0-Linux");
   curl_easy_setopt(handle, CURLOPT_HTTPHEADER, headers);
+  curl_easy_setopt(handle, CURLOPT_URL, to_cstring(a, url));
+  curl_easy_setopt(handle, CURLOPT_WRITEFUNCTION, curl_write_to_chunk);
+  curl_easy_setopt(handle, CURLOPT_WRITEDATA, &write_ctx);
 
   CURLcode success = curl_easy_perform(handle);
+  curl_slist_free_all(headers);
+  curl_easy_cleanup(handle);
+
+  str_print(chunk);
 
   return success;
 }
