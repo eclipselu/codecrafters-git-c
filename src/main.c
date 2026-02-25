@@ -16,35 +16,9 @@
 #include "arena.h"
 #include "base.h"
 #include "base_string.h"
+#include "clone.h"
 
 #define ZLIB_CHUNK_SIZE 16384
-
-typedef struct CurlWriteContext CurlWriteContext;
-struct CurlWriteContext {
-  Arena *arena;
-  String *chunk;
-};
-
-internal size_t curl_write_to_chunk(char *ptr, size_t size, size_t nmemb,
-                                    void *userdata) {
-  CurlWriteContext *ctx = (CurlWriteContext *)userdata;
-  size_t bytes = size * nmemb;
-  uint64_t new_size = ctx->chunk->size + bytes;
-  uint64_t old_size = ctx->chunk->size;
-
-  uint8_t *new_buf =
-      arena_realloc(ctx->arena, ctx->chunk->str, old_size, new_size);
-  if (new_buf == NULL) {
-    return 0;
-  }
-
-  ctx->chunk->str = new_buf;
-  ctx->chunk->size = new_size;
-
-  memcpy(ctx->chunk->str + old_size, ptr, bytes);
-  ctx->chunk->size += bytes;
-  return bytes;
-}
 
 internal int init() {
   // You can use print statements as follows for debugging, they'll be visible
@@ -726,32 +700,9 @@ internal int commit_tree(Arena *a, int argc, char *argv[]) {
 
 internal int clone_repo(Arena *a, int argc, char *argv[]) {
   String repo_url = str_literal(argv[2]);
-  String query_path = str_literal("/info/refs?service=git-upload-pack");
-  String url = str_concat(a, repo_url, query_path);
 
-  CURL *handle = curl_easy_init();
-  struct curl_slist *headers = NULL;
-
-  String chunk = {0};
-  CurlWriteContext write_ctx = {
-      .arena = a,
-      .chunk = &chunk,
-      .capacity = 0,
-  };
-  headers = curl_slist_append(headers, "git-protocol: version=2");
-  headers = curl_slist_append(headers, "User-Agent: git/2.52.0-Linux");
-  curl_easy_setopt(handle, CURLOPT_HTTPHEADER, headers);
-  curl_easy_setopt(handle, CURLOPT_URL, to_cstring(a, url));
-  curl_easy_setopt(handle, CURLOPT_WRITEFUNCTION, curl_write_to_chunk);
-  curl_easy_setopt(handle, CURLOPT_WRITEDATA, &write_ctx);
-
-  CURLcode success = curl_easy_perform(handle);
-  curl_slist_free_all(headers);
-  curl_easy_cleanup(handle);
-
-  str_print(chunk);
-
-  return success;
+  do_clone(a, repo_url);
+  return 0;
 }
 
 int main(int argc, char *argv[]) {

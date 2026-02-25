@@ -111,12 +111,25 @@ internal char *to_cstring(Arena *a, String s) {
 internal int str_compare(String a, String b) {
   uint64_t size = a.size < b.size ? a.size : b.size;
   for (uint64_t i = 0; i < size; ++i) {
-    if (a.str[i] < b.str[i]) return -1;
-    if (a.str[i] > b.str[i]) return 1;
+    if (a.str[i] < b.str[i])
+      return -1;
+    if (a.str[i] > b.str[i])
+      return 1;
   }
-  if (a.size < b.size) return -1;
-  if (a.size > b.size) return 1;
+  if (a.size < b.size)
+    return -1;
+  if (a.size > b.size)
+    return 1;
   return 0;
+}
+
+internal String str_rstrip(String s, char ch) {
+  uint8_t *ptr = s.str + s.size - 1;
+  for (int i = 0; i < s.size && *ptr == ch; ++i, --ptr) {
+    s.size--;
+  }
+
+  return s;
 }
 
 internal bool str_equal(String a, String b) {
