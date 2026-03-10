@@ -116,6 +116,8 @@ payload:
 ```
 
 - command: fetch
+  - we may want a new line here
+
 - capability-list: same as ls-ref
 - 0001 (delimiter)
 - command-args:
