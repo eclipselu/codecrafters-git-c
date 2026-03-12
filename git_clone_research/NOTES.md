@@ -96,6 +96,9 @@ payload
 0000
 ```
 
+- We should save the commit hash to refs/heads/master
+- .git/HEAD should have `ref: refs/heads/master`
+
 
 
 # fetch request
@@ -146,4 +149,3 @@ TODO: use imhex to open the response and analyze the result, things to look for:
   2 - progress messages
   3 - fatal error message just before stream aborts
   ```
-

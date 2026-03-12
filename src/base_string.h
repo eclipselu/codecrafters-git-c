@@ -261,7 +261,45 @@ internal StringList str_split(Arena *a, String string, String split_chars) {
   return list;
 }
 
+internal StringArray str_split_to_arr(Arena *a, String string,
+                                      String split_chars) {
+  StringArray arr = {0};
+  uint8_t *ptr = string.str;
+  uint8_t *end = string.str + string.size;
+
+  for (; ptr < end; ptr += 1) {
+    uint8_t *first = ptr;
+    bool found = false;
+
+    for (; ptr < end; ptr += 1) {
+      uint8_t ch = *ptr;
+
+      for (uint64_t i = 0; i < split_chars.size; i += 1) {
+        if (split_chars.str[i] == ch) {
+          found = true;
+          break;
+        }
+      }
+
+      if (found) {
+        break;
+      }
+    }
+
+    String result = {0};
+    result.str = first;
+    result.size = (uint64_t)(ptr - first);
+
+    if (result.size > 0) {
+      str_array_push(a, &arr, result);
+    }
+  }
+
+  return arr;
+}
+
 internal String str_concat_sep(Arena *a, String s1, String s2, String sep) {
+
   String result = {0};
   size_t size = s1.size + s2.size + sep.size;
   uint8_t *buf = (uint8_t *)arena_alloc(a, size);

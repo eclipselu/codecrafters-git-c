@@ -15,6 +15,8 @@
 
 global const char *g_agent_string = "git/2.52.0-Linux";
 global const char *g_version = "version 2";
+global const char *g_pkt_delimiter = "0001";
+global const char *g_pkt_flush = "0000";
 
 typedef struct CurlWriteContext CurlWriteContext;
 struct CurlWriteContext {
@@ -223,7 +225,7 @@ internal String ls_refs_payload(Arena *a, ServerCapabilities capabilities) {
   str_array_push(a, &pkt_lines, str_to_pkt_line(a, command, true));
   str_array_push(a, &pkt_lines, str_to_pkt_line(a, agent, false));
   str_array_push(a, &pkt_lines, str_to_pkt_line(a, object_format, false));
-  str_array_push(a, &pkt_lines, str_literal("0001")); // delimiter
+  str_array_push(a, &pkt_lines, str_literal(g_pkt_delimiter));
 
   // ls-refs args
   str_array_push(a, &pkt_lines, str_to_pkt_line(a, str_literal("peel"), true));
@@ -243,16 +245,118 @@ internal String ls_refs_payload(Arena *a, ServerCapabilities capabilities) {
                  str_to_pkt_line(a, str_literal("ref-prefix HEAD"), true));
 
   // end
-  str_array_push(a, &pkt_lines, str_literal("0000"));
+  str_array_push(a, &pkt_lines, str_literal(g_pkt_flush));
 
   return str_array_join(a, &pkt_lines, str_literal(""));
 }
 
-internal void ls_refs(Arena *a, CURL *curl, String repo_url,
-                      ServerCapabilities capabilities) {
+// TODO: peeled
+typedef struct GitRef GitRef;
+struct GitRef {
+  String name;
+  String obj_id;
+  String symref_target; // if empty, not a symref
+};
+
+typedef struct GitRefResult GitRefResult;
+struct GitRefResult {
+  GitRef *refs;
+  uint64_t count;
+};
+
+internal GitRefResult ls_refs(Arena *a, CURL *curl, String repo_url,
+                              ServerCapabilities capabilities) {
   String query_path = str_literal("/git-upload-pack");
   String url = str_concat(a, repo_url, query_path);
   String payload = ls_refs_payload(a, capabilities);
+
+  struct curl_slist *headers = NULL;
+
+  String chunk = {0};
+  CurlWriteContext write_ctx = {
+      .arena = a,
+      .chunk = &chunk,
+  };
+  headers = curl_slist_append(headers, "git-protocol: version=2");
+  headers = curl_slist_append(headers, "User-Agent: git/2.52.0-Linux");
+  curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+  curl_easy_setopt(curl, CURLOPT_URL, to_cstring(a, url));
+  curl_easy_setopt(curl, CURLOPT_POSTFIELDS, to_cstring(a, payload));
+  curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_write_to_chunk);
+  curl_easy_setopt(curl, CURLOPT_WRITEDATA, &write_ctx);
+
+  CURLcode success = curl_easy_perform(curl);
+  curl_slist_free_all(headers);
+  curl_easy_reset(curl);
+
+  StringArray pkt_lines = parse_pkt_lines(a, chunk);
+
+  GitRef *refs = (GitRef *)arena_alloc(a, pkt_lines.count * sizeof(GitRef));
+  for (int i = 0; i < pkt_lines.count; ++i) {
+    String line = pkt_lines.items[i];
+    StringArray splits = str_split_to_arr(a, line, str_literal(" "));
+
+    refs[i].obj_id = splits.items[0];
+    refs[i].name = splits.items[1];
+
+    if (splits.count > 2) {
+      String attr = splits.items[2];
+      if (str_starts_with_cstr(attr, "symref-target")) {
+        refs[i].symref_target = str_substr(attr, 14, attr.size);
+      }
+    }
+  }
+  str_print(chunk);
+
+  GitRefResult result = {
+      .refs = refs,
+      .count = pkt_lines.count,
+  };
+  return result;
+}
+
+internal String fetch_payload(Arena *a, GitRefResult ref_result,
+                              ServerCapabilities capabilities) {
+  StringArray pkt_lines = {0};
+
+  String command =
+      key_value_pair(a, str_literal("command"), str_literal("fetch"));
+  String agent =
+      key_value_pair(a, str_literal("agent"), str_literal(g_agent_string));
+
+  String object_format = key_value_pair(a, str_literal("object-format"),
+                                        capabilities.object_format);
+
+  str_array_push(a, &pkt_lines, str_to_pkt_line(a, command, true));
+  str_array_push(a, &pkt_lines, str_to_pkt_line(a, agent, false));
+  str_array_push(a, &pkt_lines, str_to_pkt_line(a, object_format, false));
+  str_array_push(a, &pkt_lines, str_literal(g_pkt_delimiter));
+
+  // ls-refs args
+  str_array_push(a, &pkt_lines,
+                 str_to_pkt_line(a, str_literal("thin-pack"), false));
+  str_array_push(a, &pkt_lines,
+                 str_to_pkt_line(a, str_literal("ofs-delta"), false));
+
+  for (int i = 0; i < ref_result.count; ++i) {
+    String want = str_concat_sep(a, str_literal("want"),
+                                 ref_result.refs[i].obj_id, str_literal(" "));
+    str_array_push(a, &pkt_lines, str_to_pkt_line(a, want, true));
+  }
+
+  str_array_push(a, &pkt_lines, str_to_pkt_line(a, str_literal("done"), false));
+
+  // end
+  str_array_push(a, &pkt_lines, str_literal(g_pkt_flush));
+
+  return str_array_join(a, &pkt_lines, str_literal(""));
+}
+
+internal void fetch(Arena *a, CURL *curl, String repo_url,
+                    GitRefResult ref_result, ServerCapabilities capabilities) {
+  String query_path = str_literal("/git-upload-pack");
+  String url = str_concat(a, repo_url, query_path);
+  String payload = fetch_payload(a, ref_result, capabilities);
 
   struct curl_slist *headers = NULL;
 
@@ -281,7 +385,10 @@ internal void do_clone(Arena *a, String repo_url) {
 
   ServerCapabilities capabilities =
       capability_advertisement(a, handle, repo_url);
-  ls_refs(a, handle, repo_url, capabilities);
+  GitRefResult ref_result = ls_refs(a, handle, repo_url, capabilities);
+
+  printf("\n\nFetching\n=====================================\n\n");
+  fetch(a, handle, repo_url, ref_result, capabilities);
 
   curl_easy_cleanup(handle);
 }
